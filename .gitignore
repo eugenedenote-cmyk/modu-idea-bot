@@ -1,0 +1,9 @@
+.env
+idea_scraper.log
+__pycache__/
+*.pyc
+slack_msg_temp.json
+slack_msg_intro.json
+slack_msg_sample.json
+create_reels_plan.py
+모두의창업_릴스기획안.pptx
