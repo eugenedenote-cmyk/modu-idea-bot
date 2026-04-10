@@ -166,5 +166,12 @@
     "field": "기술",
     "stage": "1차",
     "date": "2026.04.10"
+  },
+  {
+    "name": "장명식",
+    "summary": "컨테이너형 스마트팜을 활용한 초연결 농업 플랫폼(Hyper-connected Agri-Platform)",
+    "field": "기술",
+    "stage": "1차",
+    "date": "2026.04.10"
   }
 ]
