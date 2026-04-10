@@ -215,7 +215,7 @@ def build_slack_blocks(new_ideas: list, stats: dict | None) -> list:
         "type": "context",
         "elements": [{
             "type": "mrkdwn",
-            "text": "아이디어 알림봇 \u00b7 소풍커넥트 \u00b7 29분마다 자동 확인",
+            "text": "아이디어 알림봇 \u00b7 소풍커넥트 \u00b7 10분마다 자동 확인",
         }],
     })
 
