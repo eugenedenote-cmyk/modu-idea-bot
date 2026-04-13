@@ -222,6 +222,60 @@ def build_slack_blocks(new_ideas: list, stats: dict | None) -> list:
     return blocks
 
 
+def build_deleted_blocks(deleted_ideas: list, stats: dict | None) -> list:
+    count = len(deleted_ideas)
+    blocks = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": f"\U0001f5d1\ufe0f 아이디어 {count}건이 삭제(철회)되었습니다",
+                "emoji": True,
+            },
+        },
+    ]
+
+    if stats:
+        t = stats.get("total") or stats
+        submitted = t.get("submittedUserCount", "?")
+        drafting = t.get("draftUserCount", "?")
+        total = t.get("totalIdeaCount", "?")
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"\U0001f4ca 제출완료 {submitted} | 작성중 {drafting} | 총합 {total}",
+            },
+        })
+
+    blocks.append({"type": "divider"})
+
+    for i, idea in enumerate(deleted_ideas, 1):
+        name = idea.get("name", "")
+        summary = idea.get("summary", "")
+        field = idea.get("field", "")
+        stage = idea.get("stage", "")
+        date = idea.get("date", "")
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"~*{i}. {name}*~\n{summary}\n\U0001f3f7\ufe0f {field} \u00b7 {stage} \u00b7 {date}",
+            },
+        })
+
+    blocks.append({"type": "divider"})
+    blocks.append({
+        "type": "context",
+        "elements": [{
+            "type": "mrkdwn",
+            "text": "아이디어 알림봇 \u00b7 소풍커넥트 \u00b7 지원 포기 또는 타사 전환 감지",
+        }],
+    })
+
+    return blocks
+
+
 # ── API 응답에서 아이디어 파싱 ─────────────────────────────
 
 DIVISION_MAP = {"TECH": "기술", "REGION": "지역", "REGION_INVEST": "지역투자"}
@@ -308,30 +362,43 @@ def main():
     parsed = [parse_idea(item) for item in items]
     seen = load_seen()
     seen_keys = {make_key(s["name"], s["date"]) for s in seen}
+    parsed_keys = {make_key(p["name"], p["date"]) for p in parsed}
 
     new_ideas = [p for p in parsed if make_key(p["name"], p["date"]) not in seen_keys]
+    deleted_ideas = [s for s in seen if make_key(s["name"], s["date"]) not in parsed_keys]
 
-    if not new_ideas:
-        log.info("새로운 아이디어가 없습니다")
+    if not new_ideas and not deleted_ideas:
+        log.info("변동 사항이 없습니다")
         return
-
-    log.info("신규 아이디어 %d건 발견", len(new_ideas))
 
     # 4. 통계 조회
     stats = fetch_stats(access_token)
 
-    # 5. Slack 전송
-    blocks = build_slack_blocks(new_ideas, stats)
-    if send_slack(webhook_url, blocks):
-        log.info("Slack 전송 성공")
-    else:
-        log.error("Slack 전송 실패")
-        return
+    # 5-a. 신규 아이디어 Slack 전송
+    if new_ideas:
+        log.info("신규 아이디어 %d건 발견", len(new_ideas))
+        blocks = build_slack_blocks(new_ideas, stats)
+        if send_slack(webhook_url, blocks):
+            log.info("신규 알림 Slack 전송 성공")
+        else:
+            log.error("신규 알림 Slack 전송 실패")
 
-    # 6. seen_ideas 업데이트
-    seen.extend(new_ideas)
-    save_seen(seen)
-    log.info("seen_ideas.json 업데이트 완료 (총 %d건)", len(seen))
+    # 5-b. 삭제(철회) 아이디어 Slack 전송
+    if deleted_ideas:
+        log.info("삭제(철회) 아이디어 %d건 발견", len(deleted_ideas))
+        blocks = build_deleted_blocks(deleted_ideas, stats)
+        if send_slack(webhook_url, blocks):
+            log.info("삭제 알림 Slack 전송 성공")
+        else:
+            log.error("삭제 알림 Slack 전송 실패")
+
+    # 6. seen_ideas 업데이트: 신규 추가 + 삭제 제거
+    if new_ideas or deleted_ideas:
+        deleted_keys = {make_key(d["name"], d["date"]) for d in deleted_ideas}
+        seen = [s for s in seen if make_key(s["name"], s["date"]) not in deleted_keys]
+        seen.extend(new_ideas)
+        save_seen(seen)
+        log.info("seen_ideas.json 업데이트 완료 (총 %d건)", len(seen))
 
     log.info("=== 완료 ===")
 
