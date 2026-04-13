@@ -33,6 +33,7 @@ SPREADSHEET_ID = "1Jx2XTi-AuqBsZRuQ2occSxindxuOSVU0lmaL7LDhBb4"
 API_BASE = "https://poseidon-prod.modoo.or.kr"
 REFRESH_URL = f"{API_BASE}/api/v1/token/refresh"
 IDEAS_URL = f"{API_BASE}/api/v2/organization-manager/startup-ideas"
+IDEA_DETAIL_URL = f"{API_BASE}/api/v1/organization-manager/startup-ideas"
 STATS_URL = f"{API_BASE}/api/v2/organization-manager/statistics"
 IDEA_PAGE_URL = "https://poseidon.modoo.or.kr/idea?size=20&organizationIds=%5B75%5D"
 
@@ -121,6 +122,23 @@ def fetch_ideas(access_token: str) -> list | None:
     return None
 
 
+def fetch_idea_detail(access_token: str, idea_id: int) -> dict | None:
+    """v1 상세 API 호출 — region, supportArea, team, Q&A 포함"""
+    url = f"{IDEA_DETAIL_URL}/{idea_id}"
+    headers = {"poseidon-token": access_token}
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json().get("data")
+            if data:
+                log.info("상세 API 응답 키 (id=%s): %s", idea_id, list(data.keys()))
+                return data
+        log.error("상세 조회 실패 (id=%s): %s %s", idea_id, resp.status_code, resp.text[:200])
+    except requests.RequestException as e:
+        log.error("상세 조회 네트워크 오류 (id=%s): %s", idea_id, e)
+    return None
+
+
 def fetch_stats(access_token: str) -> dict | None:
     headers = {"poseidon-token": access_token}
     params = {"organizationIds[]": ORG_ID}
@@ -205,11 +223,13 @@ def build_slack_blocks(new_ideas: list, stats: dict | None) -> list:
         field = idea.get("field", "")
         stage = idea.get("stage", "")
         date = idea.get("date", "")
+        region = idea.get("region", "")
+        region_text = f" \u00b7 {region}" if region else ""
         blocks.append({
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*{i}. {name}*\n{summary}\n\U0001f3f7\ufe0f {field} \u00b7 {stage} \u00b7 {date}",
+                "text": f"*{i}. {name}*\n{summary}\n\U0001f3f7\ufe0f {field} \u00b7 {stage} \u00b7 {date}{region_text}",
             },
         })
 
@@ -259,10 +279,12 @@ def get_gsheet_client():
 
 def init_sheet_header(worksheet):
     """시트에 헤더가 없으면 추가"""
-    header = ["접수자", "아이디어 요약", "분야", "단계", "접수일", "상태", "감지 시각"]
+    header = ["접수자", "아이디어 요약", "분야", "단계", "접수일", "상태", "감지 시각", "지역"]
     first_row = worksheet.row_values(1)
     if not first_row:
         worksheet.append_row(header)
+    elif len(first_row) < 8 or "지역" not in first_row:
+        worksheet.update_cell(1, 8, "지역")
 
 
 def append_to_sheet(ideas: list, status: str = "등록"):
@@ -288,6 +310,7 @@ def append_to_sheet(ideas: list, status: str = "등록"):
                 idea.get("date", ""),
                 status,
                 now,
+                idea.get("region", ""),
             ])
 
         if rows:
@@ -295,6 +318,85 @@ def append_to_sheet(ideas: list, status: str = "등록"):
             log.info("Google Sheets에 %d건 추가 (상태: %s)", len(rows), status)
     except Exception as e:
         log.error("Google Sheets 업데이트 실패: %s", e)
+
+
+def init_detail_sheet(spreadsheet):
+    """'상세정보' 워크시트가 없으면 생성"""
+    try:
+        ws = spreadsheet.worksheet(DETAIL_SHEET_NAME)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title=DETAIL_SHEET_NAME, rows=200, cols=20)
+
+    header = ws.row_values(1)
+    if not header:
+        detail_header = [
+            "접수자", "아이디어 요약", "지역", "지원분야",
+            "팀원 정보",
+            "Q1 질문", "Q1 답변",
+            "Q2 질문", "Q2 답변",
+            "Q3 질문", "Q3 답변",
+            "접수일", "감지 시각",
+        ]
+        ws.append_row(detail_header)
+    return ws
+
+
+def append_detail_rows(ideas: list):
+    """신규 아이디어 상세 정보를 '상세정보' 시트에 추가"""
+    try:
+        client = get_gsheet_client()
+        if not client:
+            return
+
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+        ws = init_detail_sheet(spreadsheet)
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        rows = []
+        for idea in ideas:
+            # 팀원 정보를 문자열로 변환
+            members = idea.get("teamMembers", [])
+            if isinstance(members, list):
+                member_str = ", ".join(
+                    (m.get("name", "") + "(" + m.get("role", "") + ")"
+                     if isinstance(m, dict) else str(m))
+                    for m in members
+                )
+            else:
+                member_str = str(members)
+
+            # Q&A 파싱 (최대 3개)
+            qa = idea.get("qa", [])
+            qa_cells = []
+            for j in range(3):
+                if j < len(qa):
+                    q_item = qa[j]
+                    if isinstance(q_item, dict):
+                        qa_cells.append(q_item.get("question", q_item.get("title", "")))
+                        qa_cells.append(q_item.get("answer", q_item.get("content", "")))
+                    else:
+                        qa_cells.append(str(q_item))
+                        qa_cells.append("")
+                else:
+                    qa_cells.append("")
+                    qa_cells.append("")
+
+            rows.append([
+                idea.get("name", ""),
+                idea.get("summary", ""),
+                idea.get("region", ""),
+                idea.get("supportArea", ""),
+                member_str,
+                *qa_cells,
+                idea.get("date", ""),
+                now,
+            ])
+
+        if rows:
+            ws.append_rows(rows)
+            log.info("상세정보 시트에 %d건 추가", len(rows))
+    except Exception as e:
+        log.error("상세정보 시트 업데이트 실패: %s", e)
 
 
 def build_deleted_blocks(deleted_ideas: list, stats: dict | None) -> list:
@@ -331,11 +433,13 @@ def build_deleted_blocks(deleted_ideas: list, stats: dict | None) -> list:
         field = idea.get("field", "")
         stage = idea.get("stage", "")
         date = idea.get("date", "")
+        region = idea.get("region", "")
+        region_text = f" \u00b7 {region}" if region else ""
         blocks.append({
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"~*{i}. {name}*~\n{summary}\n\U0001f3f7\ufe0f {field} \u00b7 {stage} \u00b7 {date}",
+                "text": f"~*{i}. {name}*~\n{summary}\n\U0001f3f7\ufe0f {field} \u00b7 {stage} \u00b7 {date}{region_text}",
             },
         })
 
@@ -356,6 +460,14 @@ def build_deleted_blocks(deleted_ideas: list, stats: dict | None) -> list:
 DIVISION_MAP = {"TECH": "기술", "REGION": "지역", "REGION_INVEST": "지역투자"}
 STAGE_MAP = {"FIRST": "1차", "SECOND": "2차"}
 RESULT_MAP = {"PENDING": "대기", "PASS": "합격", "FAIL": "불합격", "CANCEL": "취소"}
+REGION_MAP = {
+    "SEOUL": "서울", "BUSAN": "부산", "DAEGU": "대구", "INCHEON": "인천",
+    "GWANGJU": "광주", "DAEJEON": "대전", "ULSAN": "울산", "SEJONG": "세종",
+    "GYEONGGI": "경기", "GANGWON": "강원", "CHUNGBUK": "충북", "CHUNGNAM": "충남",
+    "JEONBUK": "전북", "JEONNAM": "전남", "GYEONGBUK": "경북", "GYEONGNAM": "경남",
+    "JEJU": "제주",
+}
+DETAIL_SHEET_NAME = "상세정보"
 
 
 def parse_idea(item: dict) -> dict:
@@ -365,15 +477,44 @@ def parse_idea(item: dict) -> dict:
     division = item.get("division") or ""
     stage = item.get("stage") or ""
     created = item.get("createdAt") or ""
+    idea_id = item.get("id")
     if "T" in created:
         created = created[:10].replace("-", ".")
     return {
+        "id": idea_id,
         "name": nickname,
         "summary": summary,
         "field": DIVISION_MAP.get(division, division),
         "stage": STAGE_MAP.get(stage, stage),
         "date": created,
     }
+
+
+# ── 상세 정보 보강 ───────────────────────────────────────
+
+def enrich_with_details(ideas: list, access_token: str) -> list:
+    """신규 아이디어에 상세 정보(지역, 지원분야, 팀원, Q&A) 추가"""
+    for idea in ideas:
+        idea_id = idea.get("id")
+        if not idea_id:
+            continue
+        detail = fetch_idea_detail(access_token, idea_id)
+        if not detail:
+            continue
+
+        raw_region = detail.get("region") or ""
+        idea["region"] = REGION_MAP.get(raw_region, raw_region)
+        idea["supportArea"] = detail.get("supportArea") or ""
+
+        # 팀원 정보
+        members = detail.get("teamMembers") or detail.get("members") or []
+        idea["teamMembers"] = members
+
+        # Q&A 정보
+        qa_list = detail.get("answers") or detail.get("qna") or detail.get("questions") or []
+        idea["qa"] = qa_list
+
+    return ideas
 
 
 # ── 메인 ──────────────────────────────────────────────────
@@ -446,6 +587,11 @@ def main():
         log.info("변동 사항이 없습니다")
         return
 
+    # 3-b. 신규 아이디어 상세 조회 (지역, Q&A 등)
+    if new_ideas:
+        log.info("신규 아이디어 %d건 상세 조회 시작", len(new_ideas))
+        enrich_with_details(new_ideas, access_token)
+
     # 4. 통계 조회
     stats = fetch_stats(access_token)
 
@@ -458,6 +604,7 @@ def main():
         else:
             log.error("신규 알림 Slack 전송 실패")
         append_to_sheet(new_ideas, status="등록")
+        append_detail_rows(new_ideas)
 
     # 5-b. 삭제(철회) 아이디어 Slack 전송 + Google Sheets 기록
     if deleted_ideas:
