@@ -25,6 +25,7 @@ jobs:
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
+          GSHEET_CREDENTIALS: ${{ secrets.GSHEET_CREDENTIALS }}
         run: python idea_scraper.py
 
       - name: Commit updated state

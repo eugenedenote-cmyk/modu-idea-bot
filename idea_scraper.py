@@ -10,14 +10,25 @@ import json
 import logging
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import requests
+
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+    HAS_GSPREAD = True
+except ImportError:
+    HAS_GSPREAD = False
 
 BASE_DIR = Path(__file__).parent
 ENV_PATH = BASE_DIR / ".env"
 SEEN_PATH = BASE_DIR / "seen_ideas.json"
 LOG_PATH = BASE_DIR / "idea_scraper.log"
+
+GSHEET_CRED_PATH = BASE_DIR / "gsheet_credentials.json"
+SPREADSHEET_ID = "1Jx2XTi-AuqBsZRuQ2occSxindxuOSVU0lmaL7LDhBb4"
 
 API_BASE = "https://poseidon-prod.modoo.or.kr"
 REFRESH_URL = f"{API_BASE}/api/v1/token/refresh"
@@ -222,6 +233,70 @@ def build_slack_blocks(new_ideas: list, stats: dict | None) -> list:
     return blocks
 
 
+# ── Google Sheets 연동 ───────────────────────────────────
+
+def get_gsheet_client():
+    """Google Sheets 클라이언트 생성 (서비스 계정 또는 환경변수)"""
+    if not HAS_GSPREAD:
+        log.warning("gspread 미설치 — Google Sheets 연동 건너뜀")
+        return None
+
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+
+    # GitHub Actions: 환경변수에서 JSON 읽기
+    cred_json = os.environ.get("GSHEET_CREDENTIALS")
+    if cred_json:
+        cred_data = json.loads(cred_json)
+        creds = Credentials.from_service_account_info(cred_data, scopes=scopes)
+    elif GSHEET_CRED_PATH.exists():
+        creds = Credentials.from_service_account_file(str(GSHEET_CRED_PATH), scopes=scopes)
+    else:
+        log.warning("Google Sheets 인증 정보 없음 — 연동 건너뜀")
+        return None
+
+    return gspread.authorize(creds)
+
+
+def init_sheet_header(worksheet):
+    """시트에 헤더가 없으면 추가"""
+    header = ["접수자", "아이디어 요약", "분야", "단계", "접수일", "상태", "감지 시각"]
+    first_row = worksheet.row_values(1)
+    if not first_row:
+        worksheet.append_row(header)
+
+
+def append_to_sheet(ideas: list, status: str = "등록"):
+    """신규 또는 삭제된 아이디어를 Google Sheets에 추가"""
+    try:
+        client = get_gsheet_client()
+        if not client:
+            return
+
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+        worksheet = spreadsheet.sheet1
+
+        init_sheet_header(worksheet)
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        rows = []
+        for idea in ideas:
+            rows.append([
+                idea.get("name", ""),
+                idea.get("summary", ""),
+                idea.get("field", ""),
+                idea.get("stage", ""),
+                idea.get("date", ""),
+                status,
+                now,
+            ])
+
+        if rows:
+            worksheet.append_rows(rows)
+            log.info("Google Sheets에 %d건 추가 (상태: %s)", len(rows), status)
+    except Exception as e:
+        log.error("Google Sheets 업데이트 실패: %s", e)
+
+
 def build_deleted_blocks(deleted_ideas: list, stats: dict | None) -> list:
     count = len(deleted_ideas)
     blocks = [
@@ -374,7 +449,7 @@ def main():
     # 4. 통계 조회
     stats = fetch_stats(access_token)
 
-    # 5-a. 신규 아이디어 Slack 전송
+    # 5-a. 신규 아이디어 Slack 전송 + Google Sheets 기록
     if new_ideas:
         log.info("신규 아이디어 %d건 발견", len(new_ideas))
         blocks = build_slack_blocks(new_ideas, stats)
@@ -382,8 +457,9 @@ def main():
             log.info("신규 알림 Slack 전송 성공")
         else:
             log.error("신규 알림 Slack 전송 실패")
+        append_to_sheet(new_ideas, status="등록")
 
-    # 5-b. 삭제(철회) 아이디어 Slack 전송
+    # 5-b. 삭제(철회) 아이디어 Slack 전송 + Google Sheets 기록
     if deleted_ideas:
         log.info("삭제(철회) 아이디어 %d건 발견", len(deleted_ideas))
         blocks = build_deleted_blocks(deleted_ideas, stats)
@@ -391,6 +467,7 @@ def main():
             log.info("삭제 알림 Slack 전송 성공")
         else:
             log.error("삭제 알림 Slack 전송 실패")
+        append_to_sheet(deleted_ideas, status="삭제(철회)")
 
     # 6. seen_ideas 업데이트: 신규 추가 + 삭제 제거
     if new_ideas or deleted_ideas:
