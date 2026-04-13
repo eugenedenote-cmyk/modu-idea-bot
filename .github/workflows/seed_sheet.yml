@@ -18,4 +18,5 @@ jobs:
       - name: Seed sheet
         env:
           GSHEET_CREDENTIALS: ${{ secrets.GSHEET_CREDENTIALS }}
+          REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
         run: python seed_sheet.py
