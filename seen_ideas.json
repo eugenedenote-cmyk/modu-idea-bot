@@ -173,5 +173,38 @@
     "field": "기술",
     "stage": "1차",
     "date": "2026.04.11"
+  },
+  {
+    "id": 16312,
+    "name": "kosaf정동현",
+    "summary": "정부 및 공공기관의 출장비 집행 비정상의 정상화",
+    "field": "기술",
+    "stage": "1차",
+    "date": "2026.04.14",
+    "region": "대구",
+    "supportArea": "운영관리",
+    "teamMembers": [
+      {
+        "nickname": "김민정",
+        "role": "-"
+      }
+    ],
+    "qa": [
+      {
+        "questionId": 1,
+        "question": "Q2. 아이디어를 떠올린 배경 이야기를 들려주세요.",
+        "answer": "정부, 지차제, 공공기관의 출장비 집행관련 규정을 위반하여 허위 과오집행이 빈번하게 발생되고 있음.\n\n대부분 허위청구가 아닌, 내규를 정확이 이해하지 못하여 발생하는 사유임.\n\n또한 출장비 정산을 위해 발생되는 시간과 잡무도 무시할수 없음.\n\n이에 따라 기관별 내규를 반영한 출장비 정산 계산기 작성하고 이를 각기관별 별로 활용하면,\n\n업무효율화 및 출장비 허위 과오집행을 사전에 방지할수 있다고 생각함.\n\n![](https://xgsaqqpairap3855818.gcdn.gov-ntruss.com/image/service/142399/a7e7e5c88887401ba6631e354d5c7e3b.jpg)\n\n&nbsp;"
+      },
+      {
+        "questionId": 2,
+        "question": "Q3. 아이디어는 누구의 어떤 문제를 해결해주나요?",
+        "answer": "정부, 지자체, 공공기관의 출장비 집행을 투명화하고, 내규에 따라 계산 및 증빙을 통해,\n\n부정, 허위, 과오지급을 방지하고,\n\n대부분의 정상적인 이용자의 출장비 정산의 편라성 제고 가능"
+      },
+      {
+        "questionId": 3,
+        "question": "Q4. 아이디어를 어떻게 실현하고 싶으신가요?",
+        "answer": "각 기관별 내규와 기준을 모두 조금씩 다르게 운영되고 있음.\n\n다만\n\n각기관의 내규를 기반으로 세부사항 또는 참조사항은 공무원여비지급기준을 가적 활용하고 있음.\n\n따라서 이를 활용할수 있는 기본툴을 제공하고\n\n각기관의 내규 및 특수성을 감안한해서 주요 가감항복을 반영\n\n![](https://xgsaqqpairap3855818.gcdn.gov-ntruss.com/image/service/142399/784efe2a2eb14e0f939016b438c5ef65.png)\n\n![](https://xgsaqqpairap3855818.gcdn.gov-ntruss.com/image/service/142399/de8db38b2da04576a6c7ff8e52d31462.png)\n\n![](https://xgsaqqpairap3855818.gcdn.gov-ntruss.com/image/service/142399/3d4ca37caa7048f2b16b2fe0928b39ef.png)\n\n![](https://xgsaqqpairap3855818.gcdn.gov-ntruss.com/image/service/142399/8a5d5fef7efe42518a9901b5bd7acda1.png)\n\n&nbsp;"
+      }
+    ]
   }
 ]
