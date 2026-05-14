@@ -29,6 +29,7 @@ LOG_PATH = BASE_DIR / "idea_scraper.log"
 
 GSHEET_CRED_PATH = BASE_DIR / "gsheet_credentials.json"
 SPREADSHEET_ID = "1Jx2XTi-AuqBsZRuQ2occSxindxuOSVU0lmaL7LDhBb4"
+SPREADSHEET_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit?usp=sharing"
 
 API_BASE = "https://poseidon-prod.modoo.or.kr"
 REFRESH_URL = f"{API_BASE}/api/v1/token/refresh"
@@ -230,6 +231,42 @@ def send_slack(webhook_url: str, blocks: list) -> bool:
     return False
 
 
+def get_stats_counts(stats: dict | None) -> tuple[str, str, str] | None:
+    if not stats:
+        return None
+
+    organizations = stats.get("organizations") or []
+    for org in organizations:
+        if org.get("organizationId") == ORG_ID and org.get("statistics"):
+            stats = org["statistics"]
+            break
+    else:
+        stats = stats.get("total") or stats
+
+    submitted = stats.get("submittedUserCount", "?")
+    drafting = stats.get("draftUserCount", "?")
+    total = stats.get("totalIdeaCount", "?")
+    return submitted, drafting, total
+
+
+def build_action_buttons() -> dict:
+    return {
+        "type": "actions",
+        "elements": [
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "\U0001f517 목록 바로가기", "emoji": True},
+                "url": IDEA_PAGE_URL,
+            },
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "구글 시트 바로가기", "emoji": True},
+                "url": SPREADSHEET_URL,
+            },
+        ],
+    }
+
+
 def build_slack_blocks(new_ideas: list, stats: dict | None) -> list:
     count = len(new_ideas)
     blocks = [
@@ -243,11 +280,9 @@ def build_slack_blocks(new_ideas: list, stats: dict | None) -> list:
         },
     ]
 
-    if stats:
-        t = stats.get("total") or stats
-        submitted = t.get("submittedUserCount", "?")
-        drafting = t.get("draftUserCount", "?")
-        total = t.get("totalIdeaCount", "?")
+    stats_counts = get_stats_counts(stats)
+    if stats_counts:
+        submitted, drafting, total = stats_counts
         blocks.append({
             "type": "section",
             "text": {
@@ -275,14 +310,7 @@ def build_slack_blocks(new_ideas: list, stats: dict | None) -> list:
         })
 
     blocks.append({"type": "divider"})
-    blocks.append({
-        "type": "actions",
-        "elements": [{
-            "type": "button",
-            "text": {"type": "plain_text", "text": "\U0001f517 목록 바로가기", "emoji": True},
-            "url": IDEA_PAGE_URL,
-        }],
-    })
+    blocks.append(build_action_buttons())
     blocks.append({
         "type": "context",
         "elements": [{
@@ -453,11 +481,9 @@ def build_deleted_blocks(deleted_ideas: list, stats: dict | None) -> list:
         },
     ]
 
-    if stats:
-        t = stats.get("total") or stats
-        submitted = t.get("submittedUserCount", "?")
-        drafting = t.get("draftUserCount", "?")
-        total = t.get("totalIdeaCount", "?")
+    stats_counts = get_stats_counts(stats)
+    if stats_counts:
+        submitted, drafting, total = stats_counts
         blocks.append({
             "type": "section",
             "text": {
@@ -485,6 +511,7 @@ def build_deleted_blocks(deleted_ideas: list, stats: dict | None) -> list:
         })
 
     blocks.append({"type": "divider"})
+    blocks.append(build_action_buttons())
     blocks.append({
         "type": "context",
         "elements": [{
