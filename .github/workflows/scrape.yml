@@ -22,11 +22,25 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run scraper
+        id: scraper
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
           GSHEET_CREDENTIALS: ${{ secrets.GSHEET_CREDENTIALS }}
         run: python idea_scraper.py
+
+      - name: Persist refreshed token
+        if: ${{ steps.scraper.outputs.refresh_token != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.SECRETS_ADMIN_TOKEN }}
+          NEW_REFRESH_TOKEN: ${{ steps.scraper.outputs.refresh_token }}
+        run: |
+          if [ -n "$GH_TOKEN" ]; then
+            gh secret set REFRESH_TOKEN --body "$NEW_REFRESH_TOKEN" --repo "${{ github.repository }}"
+          else
+            echo "### REFRESH_TOKEN was rotated but not persisted" >> "$GITHUB_STEP_SUMMARY"
+            echo "Add a repository secret named SECRETS_ADMIN_TOKEN with permission to update Actions secrets, then replace REFRESH_TOKEN with a freshly issued token." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Commit updated state
         run: |

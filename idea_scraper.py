@@ -10,7 +10,7 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -86,6 +86,44 @@ def save_env(env: dict):
     ENV_PATH.write_text("\n".join(lines), encoding="utf-8")
 
 
+def decode_jwt_payload(token: str) -> dict:
+    """Return an unsigned JWT payload for diagnostics only."""
+    try:
+        import base64
+
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload.encode("utf-8")))
+    except Exception:
+        return {}
+
+
+def describe_token_expiry(token: str) -> str:
+    payload = decode_jwt_payload(token)
+    exp = payload.get("exp")
+    if not exp:
+        return "만료 시간을 확인할 수 없음"
+
+    exp_dt = datetime.fromtimestamp(exp, timezone.utc).astimezone()
+    now = datetime.now(timezone.utc).astimezone()
+    state = "만료됨" if now >= exp_dt else "유효"
+    return f"{state}, exp={exp_dt.isoformat(timespec='seconds')}"
+
+
+def mask_github_secret(value: str):
+    if os.environ.get("GITHUB_ACTIONS") == "true" and value:
+        print(f"::add-mask::{value}")
+
+
+def write_github_output(name: str, value: str):
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if not output_path or not value:
+        return
+
+    with open(output_path, "a", encoding="utf-8") as fp:
+        fp.write(f"{name}<<EOF\n{value}\nEOF\n")
+
+
 # ── 토큰 갱신 ─────────────────────────────────────────────
 
 def refresh_tokens(refresh_token: str) -> dict | None:
@@ -100,6 +138,9 @@ def refresh_tokens(refresh_token: str) -> dict | None:
             if data and data.get("accessToken"):
                 return data
         log.error("토큰 갱신 실패: %s %s", resp.status_code, resp.text[:200])
+        log.error("현재 REFRESH_TOKEN 상태: %s", describe_token_expiry(refresh_token))
+        if resp.status_code in (401, 403, 404):
+            log.error("모두의창업에 다시 로그인해서 REFRESH_TOKEN을 새로 발급해야 합니다.")
     except requests.RequestException as e:
         log.error("토큰 갱신 네트워크 오류: %s", e)
     return None
@@ -519,7 +560,7 @@ def enrich_with_details(ideas: list, access_token: str) -> list:
 
 # ── 메인 ──────────────────────────────────────────────────
 
-def main():
+def main() -> int:
     log.info("=== 아이디어 스크래퍼 시작 ===")
 
     config = get_config()
@@ -528,20 +569,23 @@ def main():
 
     if not webhook_url or webhook_url == "YOUR_WEBHOOK_URL_HERE":
         log.error("SLACK_WEBHOOK_URL이 설정되지 않았습니다.")
-        return
+        return 1
 
     if not refresh_token or refresh_token == "여기에_토큰_붙여넣기":
         log.error("REFRESH_TOKEN이 설정되지 않았습니다. 브라우저 로그인 후 토큰을 추출하세요.")
-        return
+        return 1
 
     # 1. 토큰 갱신
     tokens = refresh_tokens(refresh_token)
     if not tokens:
         log.error("토큰 갱신 실패. 재로그인이 필요할 수 있습니다.")
-        return
+        return 1
 
     access_token = tokens["accessToken"]
     new_refresh = tokens.get("refreshToken", refresh_token)
+    mask_github_secret(new_refresh)
+    write_github_output("refresh_token", new_refresh)
+    log.info("새 REFRESH_TOKEN 상태: %s", describe_token_expiry(new_refresh))
 
     # .env에 새 refreshToken 저장 (로컬 실행 시)
     env = load_env()
@@ -554,7 +598,7 @@ def main():
     data = fetch_ideas(access_token)
     if data is None:
         log.error("아이디어 목록 조회 실패")
-        return
+        return 1
 
     # API 응답 구조 파악
     if isinstance(data, dict):
@@ -565,11 +609,11 @@ def main():
         log.info("API 응답: 리스트, 아이디어 수: %d", len(items))
     else:
         log.error("예상치 못한 API 응답 형태: %s", type(data))
-        return
+        return 1
 
     if not items:
         log.info("조회된 아이디어가 없습니다")
-        return
+        return 0
 
     # 첫 아이템 구조 로그 (디버깅용)
     log.info("첫 아이템 키: %s", list(items[0].keys()) if items else "없음")
@@ -585,7 +629,7 @@ def main():
 
     if not new_ideas and not deleted_ideas:
         log.info("변동 사항이 없습니다")
-        return
+        return 0
 
     # 3-b. 신규 아이디어 상세 조회 (지역, Q&A 등)
     if new_ideas:
@@ -594,6 +638,7 @@ def main():
 
     # 4. 통계 조회
     stats = fetch_stats(access_token)
+    delivery_failed = False
 
     # 5-a. 신규 아이디어 Slack 전송 + Google Sheets 기록
     if new_ideas:
@@ -603,6 +648,7 @@ def main():
             log.info("신규 알림 Slack 전송 성공")
         else:
             log.error("신규 알림 Slack 전송 실패")
+            delivery_failed = True
         append_to_sheet(new_ideas, status="등록")
         append_detail_rows(new_ideas)
 
@@ -614,6 +660,7 @@ def main():
             log.info("삭제 알림 Slack 전송 성공")
         else:
             log.error("삭제 알림 Slack 전송 실패")
+            delivery_failed = True
         append_to_sheet(deleted_ideas, status="삭제(철회)")
 
     # 6. seen_ideas 업데이트: 신규 추가 + 삭제 제거
@@ -625,7 +672,8 @@ def main():
         log.info("seen_ideas.json 업데이트 완료 (총 %d건)", len(seen))
 
     log.info("=== 완료 ===")
+    return 1 if delivery_failed else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
