@@ -39,6 +39,8 @@ STATS_URL = f"{API_BASE}/api/v2/organization-manager/statistics"
 IDEA_PAGE_URL = "https://poseidon.modoo.or.kr/idea?size=20&organizationIds=%5B75%5D"
 
 ORG_ID = 75
+IDEAS_PAGE_SIZE = 100
+MAX_IDEA_PAGES = 100
 
 logging.basicConfig(
     level=logging.INFO,
@@ -149,18 +151,66 @@ def refresh_tokens(refresh_token: str) -> dict | None:
 
 # ── 아이디어 목록 조회 ────────────────────────────────────
 
-def fetch_ideas(access_token: str) -> list | None:
+def extract_idea_items(data) -> list:
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        return data.get("content") or data.get("ideas") or data.get("items") or []
+    return []
+
+
+def fetch_ideas_page(access_token: str, page: int, size: int) -> tuple[list, dict | None] | None:
     headers = {"poseidon-token": access_token}
-    params = {"organizationIds[]": ORG_ID, "page": 0, "size": 100}
+    params = {"organizationIds[]": ORG_ID, "page": page, "size": size}
     try:
         resp = requests.get(IDEAS_URL, headers=headers, params=params, timeout=10)
         if resp.status_code == 200:
             data = resp.json().get("data")
-            if data:
-                return data
-        log.error("아이디어 조회 실패: %s %s", resp.status_code, resp.text[:200])
+            if data is not None:
+                return extract_idea_items(data), data if isinstance(data, dict) else None
+        log.error("아이디어 조회 실패(page=%d): %s %s", page, resp.status_code, resp.text[:200])
     except requests.RequestException as e:
-        log.error("아이디어 조회 네트워크 오류: %s", e)
+        log.error("아이디어 조회 네트워크 오류(page=%d): %s", page, e)
+    return None
+
+
+def fetch_ideas(access_token: str) -> list | None:
+    all_items = []
+    seen_ids = set()
+
+    for page in range(MAX_IDEA_PAGES):
+        result = fetch_ideas_page(access_token, page, IDEAS_PAGE_SIZE)
+        if result is None:
+            return None
+
+        items, meta = result
+        if not items:
+            log.info("아이디어 페이지 조회 완료: page=%d, 누적=%d", page, len(all_items))
+            return all_items
+
+        new_items = []
+        for item in items:
+            idea_id = item.get("id") if isinstance(item, dict) else None
+            if idea_id is not None:
+                if idea_id in seen_ids:
+                    continue
+                seen_ids.add(idea_id)
+            new_items.append(item)
+
+        all_items.extend(new_items)
+        log.info("아이디어 페이지 조회: page=%d, page_items=%d, 누적=%d", page, len(items), len(all_items))
+
+        if meta:
+            if meta.get("last") is True:
+                return all_items
+            total_pages = meta.get("totalPages")
+            if isinstance(total_pages, int) and page + 1 >= total_pages:
+                return all_items
+
+        if len(items) < IDEAS_PAGE_SIZE:
+            return all_items
+
+    log.error("아이디어 페이지가 %d페이지를 초과했습니다. 삭제 판정을 중단합니다.", MAX_IDEA_PAGES)
     return None
 
 
@@ -210,6 +260,13 @@ def save_seen(seen: list):
 
 def make_key(name: str, date: str) -> str:
     return f"{name}_{date}"
+
+
+def idea_key(idea: dict) -> str:
+    idea_id = idea.get("id")
+    if idea_id is not None:
+        return f"id:{idea_id}"
+    return f"name_date:{make_key(idea.get('name', ''), idea.get('date', ''))}"
 
 
 # ── Slack 전송 ────────────────────────────────────────────
@@ -627,16 +684,8 @@ def main() -> int:
         log.error("아이디어 목록 조회 실패")
         return 1
 
-    # API 응답 구조 파악
-    if isinstance(data, dict):
-        items = data.get("content") or data.get("ideas") or data.get("items") or []
-        log.info("API 응답 키: %s, 아이디어 수: %d", list(data.keys()), len(items))
-    elif isinstance(data, list):
-        items = data
-        log.info("API 응답: 리스트, 아이디어 수: %d", len(items))
-    else:
-        log.error("예상치 못한 API 응답 형태: %s", type(data))
-        return 1
+    items = data
+    log.info("전체 아이디어 수: %d", len(items))
 
     if not items:
         log.info("조회된 아이디어가 없습니다")
@@ -648,13 +697,26 @@ def main() -> int:
     # 3. 파싱 + 비교
     parsed = [parse_idea(item) for item in items]
     seen = load_seen()
-    seen_keys = {make_key(s["name"], s["date"]) for s in seen}
-    parsed_keys = {make_key(p["name"], p["date"]) for p in parsed}
+    seen_keys = {idea_key(s) for s in seen}
+    parsed_keys = {idea_key(p) for p in parsed}
 
-    new_ideas = [p for p in parsed if make_key(p["name"], p["date"]) not in seen_keys]
-    deleted_ideas = [s for s in seen if make_key(s["name"], s["date"]) not in parsed_keys]
+    new_candidates = [p for p in parsed if idea_key(p) not in seen_keys]
+    deleted_ideas = [s for s in seen if idea_key(s) not in parsed_keys]
+    backfilled_ideas = []
 
-    if not new_ideas and not deleted_ideas:
+    if len(seen) >= IDEAS_PAGE_SIZE and len(parsed) > IDEAS_PAGE_SIZE:
+        first_page_keys = {idea_key(p) for p in parsed[:IDEAS_PAGE_SIZE]}
+        new_ideas = [p for p in new_candidates if idea_key(p) in first_page_keys]
+        backfilled_ideas = [p for p in new_candidates if idea_key(p) not in first_page_keys]
+        if backfilled_ideas:
+            log.info(
+                "기존 100건 제한으로 누락됐던 아이디어 %d건을 알림 없이 seen에 백필합니다.",
+                len(backfilled_ideas),
+            )
+    else:
+        new_ideas = new_candidates
+
+    if not new_ideas and not deleted_ideas and not backfilled_ideas:
         log.info("변동 사항이 없습니다")
         return 0
 
@@ -691,10 +753,11 @@ def main() -> int:
         append_to_sheet(deleted_ideas, status="삭제(철회)")
 
     # 6. seen_ideas 업데이트: 신규 추가 + 삭제 제거
-    if new_ideas or deleted_ideas:
-        deleted_keys = {make_key(d["name"], d["date"]) for d in deleted_ideas}
-        seen = [s for s in seen if make_key(s["name"], s["date"]) not in deleted_keys]
+    if new_ideas or deleted_ideas or backfilled_ideas:
+        deleted_keys = {idea_key(d) for d in deleted_ideas}
+        seen = [s for s in seen if idea_key(s) not in deleted_keys]
         seen.extend(new_ideas)
+        seen.extend(backfilled_ideas)
         save_seen(seen)
         log.info("seen_ideas.json 업데이트 완료 (총 %d건)", len(seen))
 
